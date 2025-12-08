@@ -1,0 +1,122 @@
+#!/bin/bash
+
+# /etc/udev/rules.d/90-local.rules
+# SUBSYSTEM=="power_supply", ACTION=="change", ENV{POWER_SUPPLY_ONLINE}!="", RUN+="/home/daniel/bin/tune"
+# echo -e 'echo #!/bin/bash\nexec /home/daniel/bin/tune' >/etc/rc.local && chmod a+x /etc/rc.local && systemctl enable rc-local
+
+# test with
+# grep . /sys/devices/system/cpu/cpufreq/policy*/scaling_governor
+
+#set -eo pipefail
+lock=/run/tuning.lock
+log=/run/tuning.log
+echo -n "$(date) START" >>$log
+
+check() {
+   for i in /sys/class/power_supply/*/online; do
+      read -r POWER_SUPPLY_ONLINE <"$i"
+      [ "$POWER_SUPPLY_ONLINE" = "1" ] && return
+   done
+}
+
+# if called manually, check status
+if [ -z "$POWER_SUPPLY_ONLINE" ]; then
+   case "$1" in
+   performance)
+      POWER_SUPPLY_ONLINE=1
+      echo -n " MANUAL" >>$log
+      ;;
+   powersave)
+      POWER_SUPPLY_ONLINE=0
+      echo -n " MANUAL" >>$log
+      ;;
+   "")
+      check
+      echo "$POWER_SUPPLY_ONLINE"
+      echo -n " AUTO" >>$log
+      ;;
+   *)
+      echo "usage: tune [performance|powersave]"
+      exit 1
+      ;;
+   esac
+else
+   echo -n " UDEV" >>$log
+   [ -e $lock ] && read -r last <$lock
+   if [ "$POWER_SUPPLY_ONLINE" == "$last" ]; then
+      echo " SKIP" >>$log
+      exit 0
+   fi
+
+   echo -n "$POWER_SUPPLY_ONLINE" >$lock
+fi
+
+echo -n " POWER_SUPPLY_ONLINE=$POWER_SUPPLY_ONLINE" >>$log
+
+echo 90 >/sys/class/power_supply/qcom-battmgr-bat/charge_control_end_threshold
+
+case "$POWER_SUPPLY_ONLINE" in
+1)
+   knob=-5
+   cpu_online=1
+   cpu_governor=schedutil
+   gpu_governor=simple_ondemand
+   ;;
+0)
+   knob=0
+   cpu_online=0
+   cpu_governor=userspace
+   gpu_governor=userspace
+   screen=200
+   ;;
+esac
+
+if [ "$screen" != "" ]; then
+   bl=/sys/class/backlight/dp_aux_backlight
+   read -r actual <$bl/actual_brightness
+   [ "$actual" -gt "$screen" ] && echo "$screen" >$bl/brightness
+fi
+
+for i in {4..11}; do echo "$cpu_online" >/sys/devices/system/cpu/cpu"$i"/online; done
+
+for i in /sys/devices/system/cpu/cpufreq/policy*; do
+   echo "$cpu_governor" >"$i"/scaling_governor 2>/dev/null ||:
+
+   read -r line <"$i"/scaling_available_frequencies 2>/dev/null ||:
+   freqs=($line)
+   freq=${freqs[knob]}
+   # echo "using CPU $freq"
+
+   case "$cpu_governor" in
+   "userspace")
+      echo "$freq" >"$i"/scaling_min_freq 2>/dev/null ||:
+      echo "$freq" >"$i"/scaling_setspeed 2>/dev/null ||:
+      ;;
+   *)
+      echo "$freq" >"$i"/scaling_min_freq
+      ;;
+   esac
+done
+
+gpu=/sys/class/devfreq/3d00000.gpu
+echo $gpu_governor >$gpu/governor
+
+read -r line <"$gpu"/available_frequencies
+freqs=($line)
+freq=${freqs[knob]}
+# echo "using GPU $freq"
+
+case "$gpu_governor" in
+"userspace")
+   echo "$freq" >"$gpu"/userspace/min_freq
+   echo "$freq" >"$gpu"/userspace/set_freq
+   ;;
+*)
+   echo "$freq" >"$gpu"/min_freq
+   ;;
+esac
+
+echo 1500 >/proc/sys/vm/dirty_writeback_centisecs
+for i in /sys/bus/pci/devices/*/power/control; do echo auto >"$i"; done
+
+echo " FINISH" >>$log
