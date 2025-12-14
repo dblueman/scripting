@@ -4,10 +4,6 @@
 # SUBSYSTEM=="power_supply", ACTION=="change", ENV{POWER_SUPPLY_ONLINE}!="", RUN+="/home/daniel/bin/tune"
 # echo -e 'echo #!/bin/bash\nexec /home/daniel/bin/tune' >/etc/rc.local && chmod a+x /etc/rc.local && systemctl enable rc-local
 
-# test with
-# grep . /sys/devices/system/cpu/cpufreq/policy*/scaling_governor
-
-#set -eo pipefail
 lock=/run/tuning.lock
 log=/run/tuning.log
 echo -n "$(date) START" >>$log
@@ -99,7 +95,7 @@ for i in /sys/devices/system/cpu/cpufreq/policy*; do
 done
 
 gpu=/sys/class/devfreq/3d00000.gpu
-echo $gpu_governor >$gpu/governor
+echo "$gpu_governor" >$gpu/governor
 
 read -r line <"$gpu"/available_frequencies
 freqs=($line)
@@ -108,11 +104,13 @@ freq=${freqs[knob]}
 
 case "$gpu_governor" in
 "userspace")
-   echo "$freq" >"$gpu"/userspace/min_freq
    echo "$freq" >"$gpu"/userspace/set_freq
+   echo "$freq" >"$gpu"/max_freq
+   echo "$freq" >"$gpu"/min_freq
    ;;
 *)
    echo "$freq" >"$gpu"/min_freq
+   echo "${freqs[-1]}" >"$gpu"/max_freq
    ;;
 esac
 
