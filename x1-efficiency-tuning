@@ -2,7 +2,7 @@
 
 # /etc/udev/rules.d/90-local.rules
 # SUBSYSTEM=="power_supply", ACTION=="change", ENV{POWER_SUPPLY_ONLINE}!="", RUN+="/home/daniel/bin/tune"
-# echo -e 'echo #!/bin/bash\nexec /home/daniel/bin/tune' >/etc/rc.local && chmod a+x /etc/rc.local && systemctl enable rc-local
+# echo -e '#!/bin/bash\nexec /home/daniel/bin/tune' >/etc/rc.local && chmod a+x /etc/rc.local && systemctl enable rc-local
 
 lock=/run/tuning.lock
 log=/run/tuning.log
@@ -37,7 +37,7 @@ if [ -z "$POWER_SUPPLY_ONLINE" ]; then
       ;;
    esac
 else
-   echo -n " UDEV" >>$log
+   echo -n " UDEV POWER_SUPPLY_ONLINE=$POWER_SUPPLY_ONLINE" >>$log
    [ -e $lock ] && read -r last <$lock
    if [ "$POWER_SUPPLY_ONLINE" == "$last" ]; then
       echo " SKIP" >>$log
@@ -53,14 +53,16 @@ echo 90 >/sys/class/power_supply/qcom-battmgr-bat/charge_control_end_threshold
 
 case "$POWER_SUPPLY_ONLINE" in
 1)
-   knob=-5
+   knob=0
    cpu_online=1
+   boost=1
    cpu_governor=schedutil
    gpu_governor=simple_ondemand
    ;;
 0)
    knob=0
    cpu_online=0
+   boost=0
    cpu_governor=userspace
    gpu_governor=userspace
    screen=200
@@ -81,7 +83,7 @@ for i in /sys/devices/system/cpu/cpufreq/policy*; do
    read -r line <"$i"/scaling_available_frequencies 2>/dev/null ||:
    freqs=($line)
    freq=${freqs[knob]}
-   # echo "using CPU $freq"
+   # echo "min CPU frequency $freq"
 
    case "$cpu_governor" in
    "userspace")
@@ -100,7 +102,7 @@ echo "$gpu_governor" >$gpu/governor
 read -r line <"$gpu"/available_frequencies
 freqs=($line)
 freq=${freqs[knob]}
-# echo "using GPU $freq"
+# echo "min GPU frequency $freq"
 
 case "$gpu_governor" in
 "userspace")
@@ -114,7 +116,9 @@ case "$gpu_governor" in
    ;;
 esac
 
+echo "$boost" >/sys/devices/system/cpu/cpufreq/boost
 echo 1500 >/proc/sys/vm/dirty_writeback_centisecs
 for i in /sys/bus/pci/devices/*/power/control; do echo auto >"$i"; done
+for i in /sys/devices/platform/soc@0/*/power/control /sys/devices/platform/soc@0/*/*/power/control; do echo auto >"$i"; done
 
 echo " FINISH" >>$log
